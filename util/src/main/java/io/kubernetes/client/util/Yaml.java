@@ -29,9 +29,18 @@ import java.io.StringReader;
 import java.io.Writer;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.text.ParseException;
 import java.time.OffsetDateTime;
-import java.util.*;
-
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.Locale;
 import io.kubernetes.client.util.generic.GenericKubernetesApi;
 import io.kubernetes.client.util.generic.KubernetesApiResponse;
 import okio.ByteString;
@@ -71,7 +80,7 @@ public class Yaml {
     Object unstructuredObject = Yaml.load(new StringReader(content));
 
     if (!(unstructuredObject instanceof Map)) {
-      throw new IllegalArgumentException("Invalid YAML");
+      throw new ParseException("Invalid YAML", 0);
     }
     //typecasting the unstructured object in map
     Map<String, Object> yamlMap = (Map<String, Object>) unstructuredObject;
@@ -81,7 +90,7 @@ public class Yaml {
     String kind = (String) yamlMap.get("kind");
 
     if (apiVersion == null || kind == null) {
-      throw new IllegalArgumentException("YAML does not contain apiVersion or kind");
+      throw new ParseException("YAML does not contain apiVersion or kind", 0);
     }
 
     //creating variable to extract api group
