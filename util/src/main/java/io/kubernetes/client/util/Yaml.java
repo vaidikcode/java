@@ -13,6 +13,7 @@ limitations under the License.
 package io.kubernetes.client.util;
 
 import com.google.gson.annotations.SerializedName;
+import io.kubernetes.client.Discovery;
 import io.kubernetes.client.common.KubernetesObject;
 import io.kubernetes.client.common.KubernetesType;
 import io.kubernetes.client.custom.IntOrString;
@@ -40,14 +41,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.Locale;
+
 import io.kubernetes.client.util.generic.GenericKubernetesApi;
 import io.kubernetes.client.util.generic.KubernetesApiResponse;
 import okio.ByteString;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.DumperOptions;
-import org.yaml.snakeyaml.DumperOptions.FlowStyle;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.TypeDescription;
 import org.yaml.snakeyaml.constructor.BaseConstructor;
@@ -67,65 +67,86 @@ public class Yaml {
 
   static final Logger logger = LoggerFactory.getLogger(Yaml.class);
 
-  /**
-   * Load an API object from a YAML string representation without already knowing the object type and loads and submit any type of resource
-   * V1Pod
-   *
-   * @param content The YAML content
-   * @return An instantiation of the object.
-   * @throws IOException If an error occurs while reading the YAML.
-   */
-  public static Object loadAndSubmitResource(String content) throws Exception {
-    //loading yaml content as unstructured object
-    Object unstructuredObject = Yaml.load(new StringReader(content));
 
+  /**
+   * Loads an API object from a YAML string representation without knowing the object type
+   * and submits any type of resource.
+   *
+   * Note: This method works for single-instance YAML files only.
+   * If the YAML contains multiple resources, it will fail.
+   * Support for multiple resources in a single YAML file is not implemented yet.
+   *
+   * @param content The YAML content as a Reader
+   * @return The created resource object
+   * @throws Exception If there is an error in parsing and submitting resources.
+   */
+  public static Object loadAndSubmitResource(Reader content) throws Exception {
+    // Initialize the API client and Discovery instance
+    ApiClient client = Configuration.getDefaultApiClient();
+    Discovery discovery = new Discovery(client);
+
+    // Load the YAML content as an unstructured object
+    Object unstructuredObject = Yaml.load(content);
+
+    // Ensure the unstructured object is a Map
     if (!(unstructuredObject instanceof Map)) {
       throw new ParseException("Invalid YAML", 0);
     }
-    //typecasting the unstructured object in map
+
+    // Typecasting the unstructured object to a Map
     Map<String, Object> yamlMap = (Map<String, Object>) unstructuredObject;
 
-    //getting api version and kind
+    // Getting apiVersion and kind
     String apiVersion = (String) yamlMap.get("apiVersion");
     String kind = (String) yamlMap.get("kind");
 
+    // Validate apiVersion and kind
     if (apiVersion == null || kind == null) {
       throw new ParseException("YAML does not contain apiVersion or kind", 0);
     }
 
-    //creating variable to extract api group
-    String group;
-    String version;
+    // Finding the resource in the discovery class
+    Set<Discovery.APIResource> resources = discovery.findAll();
+    Optional<Discovery.APIResource> apiResource = resources.stream()
+            .filter(r -> r.getKind().equalsIgnoreCase(kind))
+            .findFirst();
 
-    // If apiVersion contains '/', then it means there is a specified group for it and we need to get that else it is a default group
-    if (apiVersion.contains("/")) {
-      String[] parts = apiVersion.split("/");
-      group = parts[0];
-      version = parts[1];
+    // Check if the resource kind was found
+    if (apiResource.isPresent()) {
+      String group = apiResource.get().getGroup();
+      String version = apiResource.get().getPreferredVersion();
+      String resourcePlural = apiResource.get().getResourcePlural();
+
+      // Getting the strongly typed class from ModelMapper
+      Class<?> modelClass = ModelMapper.getApiTypeClass(group, version, kind);
+
+      // Validate model class
+      if (modelClass == null) {
+        throw new IllegalArgumentException("Could not determine model class for group: "
+                + group + ", version: " + version + ", kind: " + kind);
+      }
+
+      // Reload the YAML into a strongly typed object
+      KubernetesObject typedObject = (KubernetesObject) Yaml.loadAs(content, modelClass);
+
+      // Submit the resource to Kubernetes API
+      return submitResourceToApi(typedObject, (Class<KubernetesObject>) modelClass, group, version, resourcePlural);
     } else {
-      group = "";
-      version = apiVersion;
+      throw new IllegalArgumentException("Invalid resource kind: " + kind);
     }
-
-    //creating resource plurals from kind
-    String resourcePlural = kind.toLowerCase(Locale.ROOT) + "s";  // Simplistic pluralization logic
-
-    //getting the strongly typed object from model mapper
-    Class<?> modelClass = ModelMapper.getApiTypeClass(group, version, kind);
-
-    if (modelClass == null) {
-      throw new IllegalArgumentException("Could not determine model class for group: "
-              + group + ", version: " + version + ", kind: " + kind);
-    }
-
-    //reloading the yaml in strongly typed object
-    KubernetesObject typedObject = (KubernetesObject) Yaml.loadAs(new StringReader(content), modelClass);
-
-    //we need to submit the resource to generickubernetesapi
-    return submitResourceToApi(typedObject, (Class<KubernetesObject>) modelClass, group, version, resourcePlural);
   }
 
-  //method to submit any resource to kubernetes api
+  /**
+   * Submits any resource to Kubernetes API.
+   *
+   * @param resource The resource to be submitted
+   * @param apiTypeClass The class type of the API resource
+   * @param group The API group of the resource
+   * @param version The API version of the resource
+   * @param resourcePlural The plural form of the resource
+   * @return The created resource object from the API response
+   * @throws Exception If there is an error in submitting the resource
+   */
   public static <ApiType extends KubernetesObject> Object submitResourceToApi(
           ApiType resource,
           Class<ApiType> apiTypeClass,
@@ -133,14 +154,14 @@ public class Yaml {
           String version,
           String resourcePlural) throws Exception {
 
-    //creating an api client and configuring it
+    // Creating an API client and configuring it
     ApiClient client = Config.defaultClient();
     Configuration.setDefaultApiClient(client);
 
-    //Using the apiTypeClass and apiListTypeClass for list of resources
+    // Using the apiTypeClass and apiListTypeClass for list of resources
     Class<?> apiListTypeClass = ModelMapper.getApiTypeClass(group, version, resourcePlural);
 
-    //configuring the GenericKubernetesApi handler
+    // Configuring the GenericKubernetesApi handler
     GenericKubernetesApi<ApiType, ?> genericApi = new GenericKubernetesApi<>(
             apiTypeClass,
             apiListTypeClass,
@@ -150,14 +171,15 @@ public class Yaml {
             new CustomObjectsApi(client)
     );
 
-    //Creating the resource in Kubernetes
+    // Creating the resource in Kubernetes
     KubernetesApiResponse<ApiType> apiResponse = genericApi.create(resource);
 
+    // Check if the resource creation was successful
     if (!apiResponse.isSuccess()) {
       throw new RuntimeException("Failed to create resource: " + apiResponse.getStatus());
     }
 
-    //return the created resource
+    // Return the created resource
     return apiResponse.getObject();
   }
 
