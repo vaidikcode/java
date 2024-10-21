@@ -15,6 +15,7 @@ package io.kubernetes.client.util;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.failBecauseExceptionWasNotThrown;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.kubernetes.client.Resources;
 import io.kubernetes.client.common.KubernetesType;
@@ -29,11 +30,14 @@ import java.io.File;
 import java.io.IOException;
 import java.io.StringReader;
 import java.io.StringWriter;
+import java.io.Reader;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 import org.yaml.snakeyaml.error.MarkedYAMLException;
 
 class YamlTest {
@@ -264,5 +268,51 @@ class YamlTest {
             .getxKubernetesIntOrString()).isTrue();
     String dumped = Yaml.dump(crd);
     assertThat(dumped).isEqualTo(data);
+  }
+  @Test
+  void testLoadAndSubmitResourceSuccess() throws Exception {
+    String yamlContent =
+            "apiVersion: v1\n" +
+                    "kind: Pod\n" +
+                    "metadata:\n" +
+                    "  name: test-pod\n";
+
+    Reader reader = new StringReader(yamlContent);
+
+    try (MockedStatic<Yaml> yamlMock = Mockito.mockStatic(Yaml.class)) {
+      V1Pod mockPod = new V1Pod();
+      yamlMock.when(() -> Yaml.load(reader)).thenReturn(mockPod);
+
+      Object result = Yaml.loadAndSubmitResource(reader);
+
+      assertThat(result).isNotNull();
+      assertThat(result).isInstanceOf(V1Pod.class);
+    }
+  }
+
+  @Test
+  void testLoadAndSubmitResourceInvalidYaml() {
+    String invalidYamlContent = "invalid: yaml";
+    Reader reader = new StringReader(invalidYamlContent);
+
+    Exception exception = assertThrows(Exception.class, () -> {
+      Yaml.loadAndSubmitResource(reader);
+    });
+
+    assertThat(exception.getMessage()).contains("Invalid YAML");
+  }
+
+  @Test
+  void testSubmitResourceToApiFailure() throws Exception {
+    V1Pod pod = new V1Pod();
+    String group = "apps";
+    String version = "v1";
+    String resourcePlural = "pods";
+
+    Exception exception = assertThrows(RuntimeException.class, () -> {
+      Yaml.submitResourceToApi(pod, V1Pod.class, group, version, resourcePlural);
+    });
+
+    assertThat(exception.getMessage()).contains("Failed to create resource");
   }
 }
